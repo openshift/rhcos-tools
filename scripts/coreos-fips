@@ -22,6 +22,9 @@
 set -euo pipefail
 
 RPM_OSTREE_BIN="$(command -v rpm-ostree)"
+# BOOTCFG defaults to 0, which means don't mess with the kernel arguments. If
+# set to 1 rpm-ostree commands will run if needed
+BOOTCFG=0
 
 # check_and_enable looks to see if the kernel arg is already there. If it is not
 # there, the argument will be added
@@ -54,7 +57,6 @@ function is_ostree_system() {
     fi
 }
 
-
 function enable_fips() {
     # If FIPS is already enabled, exit out quickly
     if [ "$(cat /proc/sys/crypto/fips_enabled)" == 1 ]; then
@@ -64,42 +66,60 @@ function enable_fips() {
     update-crypto-policies --set FIPS
     # Don't do bootconfig as the FIPS tools don't understand rpm-ostree
     fips-mode-setup --enable --no-bootcfg
-    # Add the kernerl args normally added by fips-mode-setup manually
-    # Make sure fips=1 is present
-    check_and_enable "fips=1"
-    # Make sure boot=UUID=... is present
-    check_and_enable "boot=UUID=${UUID}"
+    if [ "$BOOTCFG" == 1 ]; then
+        # Add the kernerl args normally added by fips-mode-setup manually
+        # Make sure fips=1 is present
+        check_and_enable "fips=1"
+        # Make sure boot=UUID=... is present
+        check_and_enable "boot=UUID=${UUID}"
+    fi
     # Create hmacs for the kernel and initramfs
     fipshmac /boot/ostree/*/vmlinuz*
     fipshmac /boot/ostree/*/initramfs*
 }
 
 function disable_fips() {
-    # If FIPS is already disabled, exit out quickly
-    if [ "$(cat /proc/sys/crypto/fips_enabled)" == 0 ]; then
-        exit 0
-    fi
     # Set the crypto policy back to DEFAULT
     update-crypto-policies --set DEFAULT
     # Don't do bootconfig as the FIPS tools don't understand rpm-ostree
     fips-mode-setup --disable --no-bootcfg
-    # Make sure fips=1 is no longer present
-    check_and_disable "fips=1"
-    # Make sure boot=UUID=... is no longer present
-    check_and_disable "boot=UUID=${UUID}"
+    if [ "$BOOTCFG" == 1 ]; then
+        # Make sure fips=1 is no longer present
+        check_and_disable "fips=1"
+        # Make sure boot=UUID=... is no longer present
+        check_and_disable "boot=UUID=${UUID}"
+    fi
     # Remove the "fips is enabled" file
     rm -f /etc/system-fips
 }
 
 function show_help() {
-    echo "You must specify one of the following: enable, disable"
+    echo "Usage: coreos-fips [enable|disable] [--bootcfg]"
+    echo ""
+    echo "Commands:"
+    echo "- enable: Enable fips and assume kernel arguments will already be set"
+    echo "- disable: Disable fips and assume kernel arguments will already be set"
+    echo ""
+    echo "Switches:"
+    echo -n "- --bootcfg: If set, enable/disable will also update the required"
+    echo " kernel arguments for FIPS."
+    echo ""
+    echo "Examples:"
+    echo "  coreos-fips enable --bootcfg"
+    echo "  coreos-fips disable --bootcfg"
     exit 1
 }
 
-# Catch no commands early
+# Catch no commands and bootcfg request early
 if [ $# == 0 ]; then
+    echo "Error: You must specify one of the following: enable, disable"
     show_help
+elif [ $# == 2 ]; then
+    if [ "$2" == "--bootcfg" ]; then
+        BOOTCFG=1
+    fi
 fi
+
 # Ensure we are on an ostree based system
 is_ostree_system
 # Get the boot disk UUID
